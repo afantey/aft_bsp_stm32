@@ -105,7 +105,7 @@ static int32_t stm32_uart_open(sdk_uart_t *uart, int32_t baudrate, int32_t data_
 
     LL_USART_Enable(uart->instance);
 
-    while((!(LL_USART_IsActiveFlag_TEACK(uart->instance))) || (!(LL_USART_IsActiveFlag_REACK(uart1.instance))))
+    while((!(LL_USART_IsActiveFlag_TEACK(uart->instance))) || (!(LL_USART_IsActiveFlag_REACK(uart->instance))))
     {
     }
 
