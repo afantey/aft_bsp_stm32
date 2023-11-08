@@ -11,7 +11,7 @@
 void sdk_hw_console_output(const char *str)
 {
     SEGGER_RTT_WriteString(0, str);
-    if(g_WellRegMap[WELL_Ctrl_DebugInfoON] == 1 && bl_dev.status.con == 1)
+    if (g_WellRegMap[WELL_Ctrl_DebugInfoON] == 1 && bl_dev.status.con == 1)
     {
         sdk_uart_write(&uart_bl, (uint8_t *)str, strlen(str));
     }
