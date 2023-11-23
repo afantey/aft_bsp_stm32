@@ -7,6 +7,7 @@
 #include "sdk_rtc.h"
 #include "aft_sdk.h"
 #include "sdk_board.h"
+#include "stm32l0xx_ll_lptim.h"
 
 #define DBG_TAG "bsp.rtc"
 #define DBG_LVL DBG_LOG
@@ -42,6 +43,56 @@ void     Configure_RTC_Calendar(void);
 uint32_t Enter_RTC_InitMode(void);
 uint32_t Exit_RTC_InitMode(void);
 uint32_t WaitForSynchro_RTC(void);
+
+static uint32_t lsi_freq = 0;
+
+static void MX_LPTIM1_Init(void)
+{
+  LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_LPTIM1);
+
+  LL_LPTIM_SetClockSource(LPTIM1, LL_LPTIM_CLK_SOURCE_INTERNAL);
+  LL_LPTIM_SetPrescaler(LPTIM1, LL_LPTIM_PRESCALER_DIV1);
+  LL_LPTIM_SetPolarity(LPTIM1, LL_LPTIM_OUTPUT_POLARITY_REGULAR);
+  LL_LPTIM_SetUpdateMode(LPTIM1, LL_LPTIM_UPDATE_MODE_IMMEDIATE);
+  LL_LPTIM_SetCounterMode(LPTIM1, LL_LPTIM_COUNTER_MODE_INTERNAL);
+  LL_LPTIM_TrigSw(LPTIM1);
+
+  LL_RCC_SetLPTIMClockSource(LL_RCC_LPTIM1_CLKSOURCE_LSI);
+}
+
+static void stm32lx_lptim_calibration(void)
+{
+    uint32_t delta_time = 0;
+    uint32_t lptim_freq = 0;
+
+    MX_LPTIM1_Init();
+    
+    LL_LPTIM_EnableTimeout(LPTIM1);
+    LL_LPTIM_Enable(LPTIM1);
+    LL_LPTIM_ClearFlag_ARROK(LPTIM1);
+    LL_LPTIM_SetAutoReload(LPTIM1, 0xFFFF); /* 定时1秒,reload = 37000 / 32 = 1156 */
+    while (!LL_LPTIM_IsActiveFlag_ARROK(LPTIM1))
+        ;
+
+    LL_LPTIM_ClearFlag_CMPOK(LPTIM1);
+    LL_LPTIM_SetCompare(LPTIM1, 37000);
+    while (!LL_LPTIM_IsActiveFlag_CMPOK(LPTIM1))
+        ;
+    LL_LPTIM_StartCounter(LPTIM1, LL_LPTIM_OPERATING_MODE_ONESHOT);
+ 
+    delta_time  = clock();
+    
+    while (!LL_LPTIM_IsActiveFlag_CMPM(LPTIM1))
+        ;
+    delta_time = clock() - delta_time;
+ 
+    /* 计算lptim的实际频率 */
+    lptim_freq = (37000) * SDK_SYSTICK_PER_SECOND / delta_time;
+    lsi_freq = lptim_freq;
+    //disable
+    LL_LPTIM_Disable(LPTIM1);
+    LOG_D("lsi_freq = %d, delta_time = %d", lsi_freq, delta_time);
+}
 
 static time_t get_rtc_timestamp(void)
 {
@@ -200,6 +251,12 @@ static sdk_err_t stm32_rtc_control(sdk_rtc_t *rtc, int32_t cmd, void *args)
         set_wakeup_autoload_value(wut);
         break;
     }
+    case SDK_CONTROL_RTC_CALIBRATION:
+#ifdef SDK_RTC_CLOCK_SELECT_LSI
+        stm32lx_lptim_calibration();
+        Configure_RTC();
+#endif
+        break;
     default:
         return -(SDK_E_INVALID);
     }
@@ -235,10 +292,25 @@ void Configure_RTC(void)
   /* Configure RTC prescaler and RTC data registers */
   /* Set Hour Format */
   LL_RTC_SetHourFormat(RTC, LL_RTC_HOURFORMAT_24HOUR);
-  /* Set Asynch Prediv (value according to source clock) */
-  LL_RTC_SetAsynchPrescaler(RTC, RTC_ASYNCH_PREDIV);
-  /* Set Synch Prediv (value according to source clock) */
-  LL_RTC_SetSynchPrescaler(RTC, RTC_SYNCH_PREDIV);
+
+  if(lsi_freq > 0)
+  {/* ck_apre=LSIFreq/(ASYNC prediv + 1) with LSIFreq=37 kHz RC */
+/* ck_spre=ck_apre/(SYNC prediv + 1) = 1 Hz */
+      uint32_t async_prediv = 0x7F;
+      uint32_t sync_prediv = lsi_freq / (async_prediv + 1) - 1;
+      /* Set Asynch Prediv (value according to source clock) */
+      LL_RTC_SetAsynchPrescaler(RTC, async_prediv);
+      /* Set Synch Prediv (value according to source clock) */
+      LL_RTC_SetSynchPrescaler(RTC, sync_prediv);
+  }
+  else
+  {
+      /* Set Asynch Prediv (value according to source clock) */
+      LL_RTC_SetAsynchPrescaler(RTC, RTC_ASYNCH_PREDIV);
+      /* Set Synch Prediv (value according to source clock) */
+      LL_RTC_SetSynchPrescaler(RTC, RTC_SYNCH_PREDIV);
+  }
+
   /* Set OutPut */
   /* Reset value is LL_RTC_ALARMOUT_DISABLE */
   //LL_RTC_SetAlarmOutEvent(RTC, LL_RTC_ALARMOUT_DISABLE);
@@ -396,6 +468,9 @@ static sdk_err_t stm32_rtc_open(sdk_rtc_t *rtc)
 {
     if (LL_RTC_BAK_GetRegister(RTC, LL_RTC_BKP_DR1) != RTC_BKP_DATE_TIME_UPDTATED)
     {
+#ifdef SDK_RTC_CLOCK_SELECT_LSI
+        stm32lx_lptim_calibration();
+#endif
         Configure_RTC();
         Configure_RTC_Calendar();
         LOG_D("rtc_setup....\n\r");
